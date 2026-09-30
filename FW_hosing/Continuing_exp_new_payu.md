@@ -1,173 +1,481 @@
-## Remaking river routing for a palaeo setup
+# Running ACCESS-ESM1.5 on Gadi
 
-The UM river routing scheme requires a number of ancillary fields that describe how runoff is transported across the land surface and eventually reaches the ocean. These ancillaries depend strongly on the underlying topography and land-sea mask and therefore need to be regenerated whenever palaeogeography is modified.
+This guide describes how to configure, run, continue and modify ACCESS-ESM1.5 experiments on NCI Gadi using the ACCESS-NRI-supported workflow based on **Payu**.
 
-The workflow below generates a new river routing ancillary (`qrparm.rivseq.LP`) consistent with the Pliocene topography and land-sea mask.
-
-The overall procedure consists of:
-
-1. Interpolating the atmospheric topography onto the 1° × 1° river-routing grid.
-2. Removing artificial topographic depressions ("sinks") that would trap runoff.
-3. Interpolating the palaeo land-sea mask onto the same 1° × 1° grid.
-4. Computing flow directions and river routing information.
-5. Building a new UM river-routing ancillary.
+The examples below focus on setting up a **freshwater hosing experiment**, but the same workflow applies to any ACCESS-ESM1.5 simulation.
 
 ---
 
-### 1. Interpolate atmospheric topography onto the river-routing grid
+## Useful links
 
-The UM river routing scheme operates on a **1° × 1° grid**, rather than the native atmospheric grid. Therefore, the first step is to interpolate the palaeo atmospheric topography onto this river-routing grid.
+### ACCESS-ESM1.5 configurations
 
-Run:
+https://github.com/ACCESS-NRI/access-esm1.5-configs/tree/release-preindustrial%2Bconcentrations
 
-```bash
-python step9a_river_atmos_topog_trip.py
-```
+### ACCESS-NRI model training
 
-#### Input files
+https://forum.access-hive.org.au/t/running-model-experiments-with-payu-and-git/2285
 
-| File | Description |
-|--------|-------------|
-| `../make_coupler/grids.nc` | Target river-routing grid definition |
-| `LP_topog_atmos_antarc.nc` | Pliocene atmospheric topography |
+### Payu tutorial
 
-#### Output file
-
-| File | Description |
-|--------|-------------|
-| `topog_new_1x1.nc` | Pliocene topography interpolated onto the 1° × 1° river-routing grid |
-
-#### Notes
-
-- The interpolation only changes the grid resolution and does not modify the topography itself.
-- The resulting file will be used in the next step to derive flow directions.
+https://forum.access-hive.org.au/t/access-om2-payu-tutorial/1750#select-experiment-12
 
 ---
 
-### 2. Remove topographic sinks
+## Overview of the ACCESS-ESM1.5 workflow
 
-Real-world topography contains enclosed depressions that can trap water. Some are physically realistic, but many are artefacts introduced by interpolation or discretisation.
+ACCESS-ESM1.5 experiments are managed through **Payu**.
 
-Before generating river pathways, these depressions must be removed to ensure that runoff can flow continuously towards the ocean.
+The experiment directory located in your home area contains:
 
-This step uses the **RichDEM** package, which applies a depression-filling algorithm to the topography.
+- Configuration files
+- Namelists
+- Input file references
+- Job submission settings
 
-#### Installing RichDEM
+The actual model outputs and restart files are stored on **scratch** and linked back to the experiment directory through symbolic links.
 
-It is recommended to install RichDEM in a dedicated environment:
+A typical workflow consists of:
 
-```bash
-conda create -n richdem python=3.11
-conda activate richdem
-pip install richdem
-```
-
-#### Run the script
-
-```bash
-python step9b_river_fill_depression_richdem.py
-```
-
-#### Input file
-
-| File | Description |
-|--------|-------------|
-| `topog_new_1x1.nc` | Interpolated 1° × 1° topography |
-
-#### Output file
-
-| File | Description |
-|--------|-------------|
-| `topog_no_sink.nc` | Topography after depression filling |
-
-#### Notes
-
-- This step is critical. Failure to remove sinks can lead to unrealistic river networks and internally drained basins.
-- The depression-filling algorithm modifies the minimum number of grid cells required to ensure continuous drainage.
-
-After completing the step:
-
-```bash
-conda deactivate
-```
+1. Cloning a configuration
+2. Modifying the configuration (e.g., freshwater forcing)
+3. Preparing restart files
+4. Running the experiment
+5. Continuing the experiment from later restart files
+6. Archiving outputs and restarts to `/g/data`
 
 ---
 
-### 3. Interpolate the land-sea mask onto the river-routing grid
+# 1. Loading the ACCESS/Payu environment
 
-The river routing calculations require a land-sea mask defined on the same 1° × 1° grid as the topography.
-
-Run:
+Before using Payu, load the ACCESS-NRI environment:
 
 ```bash
-python step9c_river_lsm1x1.py
+module use /g/data/bk83/modules
+module load payu/1.1.5
 ```
 
-#### Input file
-
-| File | Description |
-|--------|-------------|
-| `LP_lsm.nc` | Pliocene land-sea mask on the atmospheric grid |
-
-#### Output file
-
-| File | Description |
-|--------|-------------|
-| `lsm_1x1.nc` | Pliocene land-sea mask on the 1° × 1° river-routing grid |
-
-#### Notes
-
-- Ensure that the resulting land-sea mask is consistent with the interpolated topography.
-- Coastal artefacts introduced during interpolation can affect downstream routing calculations.
+You may wish to add these commands to your `.bashrc` if you use ACCESS frequently.
 
 ---
 
-### 4. Generate flow directions and river-routing fields
+# 2. Creating experiment directories
 
-Once the sink-free topography and land-sea mask are available on the same grid, river pathways can be calculated.
-
-Run:
+Create a working directory in your home area:
 
 ```bash
-python step9d_river_downslope_trip_create_ancil_v2.py
+cd ~
+mkdir access-esm
 ```
 
-#### Input files
+Create storage directories on scratch:
 
-| File | Description |
-|--------|-------------|
-| `topog_no_sink.nc` | Sink-free topography |
-| `lsm_1x1.nc` | Pliocene land-sea mask |
-| `../../orig_ancils/orig_ancil_um/qrparm.rivseq` | Original UM river-routing ancillary used as template |
-
-#### Output files
-
-| File | Description |
-|--------|-------------|
-| `river_routing_LP.nc` | Intermediate river-routing diagnostics |
-| `qrparm.rivseq.LP` | New Pliocene river-routing ancillary |
-
-#### Notes
-
-- The script calculates downslope flow directions for each land grid cell.
-- River pathways are traced until they reach the ocean.
-- The original UM ancillary is used as a template to ensure that the final output has the correct format and metadata required by the UM.
+```bash
+mkdir /scratch/<project-id>/<user-id>/access-esm
+mkdir /scratch/<project-id>/<user-id>/access-esm/archive
+```
 
 > [!TIP]
-> Plot the generated river network and compare it with the modern routing scheme. Large drainage basins (e.g., Amazon, Congo, Mississippi, Nile, and Arctic rivers) provide useful diagnostics for identifying interpolation errors or unrealistic flow pathways.
+> ACCESS-ESM1.5 produces large amounts of output. Keep experiment configurations in your home directory and store model outputs and restart files on scratch or `/g/data`.
 
 ---
 
-### Final outputs
+# 3. Cloning an ACCESS-ESM1.5 configuration
 
-After completing all steps, the main files produced are:
+Move to your experiment directory:
 
-| File | Description |
-|--------|-------------|
-| `topog_new_1x1.nc` | Topography interpolated to the river-routing grid |
-| `topog_no_sink.nc` | Sink-free topography |
-| `lsm_1x1.nc` | Land-sea mask on the river-routing grid |
-| `river_routing_LP.nc` | Intermediate river-routing diagnostics |
-| `qrparm.rivseq.LP` | Final Pliocene river-routing ancillary for UM |
+```bash
+cd ~/access-esm
+```
 
-The file `qrparm.rivseq.LP` is the ancillary that should be used in the palaeo UM configuration.
+Clone a configuration using Payu:
+
+```bash
+payu clone -B <branch> -b <new_branch> \
+    https://github.com/ACCESS-NRI/access-esm1.5-configs \
+    <experiment_name>
+```
+
+Example:
+
+```bash
+payu clone -B control \
+    -b release-preindustrial+concentrations \
+    https://github.com/ACCESS-NRI/access-esm1.5-configs \
+    PI-FW03Gr-ic
+```
+
+This creates a new experiment directory containing:
+
+- Model configuration files
+- Namelists
+- Input file references
+- Job submission settings
+
+The directory name becomes the experiment name.
+
+---
+
+# 4. Resource requirements
+
+For the standard ACCESS-ESM1.5 configuration:
+
+| Resource | Approximate value |
+|-----------|-----------|
+| CPUs | 384 |
+| Runtime | ~1.5 hr per model year |
+| Cost | ~1100 SU per model year |
+
+These values may vary slightly depending on queue load and model configuration.
+
+---
+
+# 5. Configuring a freshwater hosing experiment
+
+Freshwater hosing experiments can be performed using MOM5's ideal runoff functionality.
+
+The objective is to impose an additional freshwater flux over a specified region of the ocean.
+
+---
+
+## Enable ideal runoff in MOM5
+
+Open:
+
+```text
+ocean/input.yaml
+```
+
+Locate the namelist:
+
+```text
+ocean_sbc_nml
+```
+
+Add:
+
+```fortran
+use_ideal_runoff = .true.
+```
+
+Also add:
+
+```fortran
+runoffspread = .false.
+calvingspread = .false.
+```
+
+Your final configuration should contain:
+
+```fortran
+use_ideal_runoff = .true.
+runoffspread = .false.
+calvingspread = .false.
+```
+
+> [!IMPORTANT]
+> Even though `runoffspread` and `calvingspread` are disabled, they must be explicitly defined. Otherwise MOM5 may abort with error code 134 during initialization.
+
+---
+
+## Create the ideal runoff forcing file
+
+When `use_ideal_runoff = .true.`, MOM5 expects an input file called:
+
+```text
+ideal_runoff.nc
+```
+
+This file should contain:
+
+- Positive freshwater input over the target region
+- Zero elsewhere
+
+In this example:
+
+```text
+/g/data/y99/gp9664/access-esm/fw_input/runoff_03NA/ideal_runoff.nc
+```
+
+contains a freshwater forcing applied to the North Atlantic.
+
+---
+
+## Add the runoff file to the experiment
+
+Edit:
+
+```text
+config.yaml
+```
+
+and add the directory containing `ideal_runoff.nc` to the ocean input paths.
+
+While editing `config.yaml`, also check:
+
+- Job name
+- Walltime
+- Queue settings
+
+---
+
+# 6. Preparing restart files
+
+ACCESS-ESM1.5 experiments are usually initialized from a restart generated by a previous simulation.
+
+Create an archive directory:
+
+```bash
+mkdir -p /scratch/<project-id>/<user-id>/access-esm/archive/<exp-name>
+```
+
+Copy the desired restart into that directory.
+
+Example restart:
+
+```text
+/srv/ccrc/PaleoLM/z5283043/access-esm/archive/PI-FW03Gr-ic/restart/restart300
+```
+
+Transfer the restart directory to Gadi and place it under:
+
+```text
+/scratch/<project-id>/<user-id>/access-esm/archive/<exp-name>/
+```
+
+---
+
+# 7. Updating old restart files for Payu 1.1.5
+
+Older ACCESS-ESM1.5 experiments may not be compatible with Payu 1.1.5.
+
+Details are available here:
+
+https://forum.access-hive.org.au/t/updating-esm1-5-configurations-for-payu-version-1-1-5/3126
+
+---
+
+## Create restart_date.nml
+
+Payu 1.1.5 requires:
+
+```text
+restart_date.nml
+```
+
+inside the restart directory:
+
+```text
+<restart-dir>/ice/
+```
+
+Example:
+
+```fortran
+&coupling
+init_date=10101
+inidate=1010101
+/
+```
+
+where:
+
+| Variable | Description |
+|-----------|-----------|
+| `init_date` | Original experiment initialization date |
+| `inidate` | Date of the next restart to be run |
+
+Dates are specified as:
+
+```text
+YYYYMMDD
+```
+
+without leading zeros in the year.
+
+---
+
+## Updating an old restart
+
+1. Copy:
+
+```text
+/g/data/vk83/configurations/inputs/access-esm1p5/modern/pre-industrial/restart/ice/restart_date.nml
+```
+
+into:
+
+```text
+<restart-dir>/ice/
+```
+
+2. Set:
+
+```text
+init_date
+```
+
+equal to the value in:
+
+```text
+<experiment>/ice/input_ice.nml
+```
+
+3. Set:
+
+```text
+inidate
+```
+
+equal to the date of the restart.
+
+This can be obtained from:
+
+```text
+<restart-dir>/atmosphere/um.res.yaml
+```
+
+and converted into `YYYYMMDD` format.
+
+---
+
+# 8. Configuring automatic archiving (Payu Sync)
+
+Payu 1.1.5 can automatically archive outputs after each successful run.
+
+In `config.yaml` add:
+
+```yaml
+sync:
+    enable: True
+    path: /g/data/y99/gp9664/access-esm/archive/PI-FW03Gr-ic
+```
+
+Create the destination directory:
+
+```bash
+mkdir -p /g/data/y99/gp9664/access-esm/archive/PI-FW03Gr-ic
+```
+
+When enabled, Payu automatically:
+
+- Transfers output files to `/g/data`
+- Archives restart files
+- Executes post-processing scripts
+- Converts UM output into NetCDF format
+
+Additional details:
+
+https://forum.access-hive.org.au/t/running-model-experiments-with-payu-and-git/2285
+
+> [!TIP]
+> Enabling automatic sync is strongly recommended for long palaeoclimate simulations because it prevents scratch storage from filling up and provides a safer backup of restart files.
+
+---
+
+# 9. Checking the experiment setup
+
+Before submitting the model, verify that the configuration is valid:
+
+```bash
+payu setup
+```
+
+This command:
+
+- Creates run directories
+- Creates symbolic links
+- Checks restart locations
+- Checks executable paths
+
+Inspect the generated directories and confirm everything looks correct.
+
+Afterwards:
+
+```bash
+payu sweep
+```
+
+removes the temporary setup directory.
+
+> [!TIP]
+> `payu run` automatically performs a setup step before running. Therefore, this validation step is optional but highly recommended when creating a new experiment.
+
+---
+
+# 10. Running the model
+
+To run the experiment:
+
+```bash
+payu run
+```
+
+If the walltime and runtime options are already configured in `config.yaml`, this is sufficient.
+
+---
+
+## Running multiple model years
+
+Each Payu submission typically runs one model year before resubmitting itself.
+
+To run multiple years:
+
+```bash
+payu run -n XX
+```
+
+where:
+
+```text
+XX = number of model years
+```
+
+Example:
+
+```bash
+payu run -n 25
+```
+
+Payu will automatically resubmit the experiment until all requested years have completed.
+
+> [!TIP]
+> For long palaeoclimate simulations, it is generally advisable to submit fewer than ~20 years at a time. This reduces scratch usage and makes it easier to recover from failures.
+
+---
+
+# 11. Continuing an existing experiment
+
+To continue a completed experiment:
+
+1. Verify that the latest restart has been archived successfully.
+2. Check that `restart_date.nml` is consistent with the latest restart.
+3. Update walltime or queue settings if required.
+4. Submit additional years:
+
+```bash
+payu run -n XX
+```
+
+Payu will automatically continue from the most recent restart.
+
+No additional setup is normally required unless:
+
+- The restart location has changed.
+- The experiment configuration has been modified.
+- A Payu version update requires changes to restart files.
+
+---
+
+## Main commands summary
+
+```bash
+module use /g/data/bk83/modules
+module load payu/1.1.5
+
+payu clone ...
+payu setup
+payu sweep
+payu run
+payu run -n XX
+```
